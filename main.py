@@ -1129,25 +1129,12 @@ async def mirror_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text=summary)
 
-import os
-from threading import Thread
-from flask import Flask
-
-# --- KEEP-ALIVE SERVER FOR RENDER ---
-flask_app = Flask('')
-
-@flask_app.route('/')
-def home():
-    return "Bot is running!"
-
 # --- MAIN EXECUTION ---
 if __name__ == '__main__':
     # 1. Initialize Database
     db.init_db()
     
     # 2. Start the Keep-Alive Web Server
-    print("🌐 Starting Keep-Alive server...")
-    keep_alive()
 
     # 3. Define Timezone for Kolkata
 
