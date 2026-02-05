@@ -1,8 +1,8 @@
 import logging
 import asyncio
-import pytz 
 import html
 from html import escape
+from zoneinfo import ZoneInfo
 from telegram.constants import ParseMode
 from datetime import datetime, time
 from telegram.error import Forbidden, BadRequest
@@ -809,7 +809,16 @@ async def delallcompliments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ *Error:* {e}")
 
 
-
+def validate_poll(question, options, explanation):
+    """Ensures poll data stays within Telegram's hard limits."""
+    # Question limit: 300 chars
+    q = (question[:297] + "...") if len(question) > 300 else question
+    # Options limit: 100 chars each
+    opts = [(o[:97] + "...") if len(o) > 100 else o for o in options]
+    # Explanation limit: 200 chars
+    exp = (explanation[:197] + "...") if len(explanation) > 200 else explanation
+    return q, opts, exp
+	
 
 
 # ---------------- SETTINGS (FOOTER & AUTOQUIZ) ----------------
@@ -867,59 +876,51 @@ async def autoquiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 await update.message.reply_text("❌ Please provide a valid number for minutes.")
 
+
 async def auto_quiz_job(context: ContextTypes.DEFAULT_TYPE):
-    """Picks ONE question and sends it to ALL groups simultaneously with HTML formatting."""
-    with db.get_db() as conn:
-        # 1. Check if auto-quiz is enabled
-        setting = conn.execute("SELECT value FROM settings WHERE key='autoquiz_enabled'").fetchone()
-        if not setting or setting[0] == '0': 
-            return
-        
-        # 2. Pick a random question
-        # Fetching by index to ensure compatibility: id:0, question:1, a:2, b:3, c:4, d:5, correct:6, explanation:7
-        q = conn.execute("SELECT id, question, a, b, c, d, correct, explanation FROM questions ORDER BY RANDOM() LIMIT 1").fetchone()
-        
-        if not q:
-            return 
-
-        # 3. Get all active groups
-        chats = conn.execute("SELECT chat_id FROM chats WHERE type != 'private'").fetchall()
-
-    # Prep Poll Data
-    options = [str(q[2]), str(q[3]), str(q[4]), str(q[5])]
-    correct_map = {'1': 0, '2': 1, '3': 2, '4': 3, 'A': 0, 'B': 1, 'C': 2, 'D': 3}
-    c_idx = correct_map.get(str(q[6]).upper(), 0)
-
-    divider = "<b>━━━━━━━━━━━━━━━━━</b>"
-    question_text = f"🧠 <b>NEET MCQ (Global Quiz)</b>\n{divider}\n\n{q[1]}"
-    explanation_text = f"📖 <b>Explanation:</b>\n{q[7]}"
-
-    # Send to all groups
-    for c in chats:
-        try:
-            msg = await context.bot.send_poll(
-                chat_id=c[0],
-                question=question_text,
-                options=options,
-                type=Poll.QUIZ,
-                correct_option_id=c_idx,
-                explanation=explanation_text,
-                explanation_parse_mode=ParseMode.HTML,
-                is_anonymous=False
-            )
+    try:
+        with db.get_db() as conn:
+            setting = conn.execute("SELECT value FROM settings WHERE key='autoquiz_enabled'").fetchone()
+            if not setting or setting[0] == '0': return
             
-            # Register active poll for scoring
-            with db.get_db() as conn:
-                conn.execute("INSERT INTO active_polls (poll_id, chat_id, correct_option_id) VALUES (?,?,?)", 
-                             (msg.poll.id, c[0], c_idx))
-            
-            await asyncio.sleep(0.2) 
-        except Exception:
-            continue
+            q = conn.execute("SELECT id, question, a, b, c, d, correct, explanation FROM questions ORDER BY RANDOM() LIMIT 1").fetchone()
+            if not q: return 
+            chats = conn.execute("SELECT chat_id FROM chats WHERE type != 'private'").fetchall()
 
-    # 4. Remove question from pool after successful broadcast
-    with db.get_db() as conn:
-        conn.execute("DELETE FROM questions WHERE id = ?", (q[0],))
+        # VALIDATE DATA BEFORE SENDING
+        question_text, options, explanation_text = validate_poll(
+            f"🧠 NEET MCQ:\n\n{q[1]}", 
+            [str(q[2]), str(q[3]), str(q[4]), str(q[5])], 
+            str(q[7])
+        )
+        
+        correct_map = {'1': 0, '2': 1, '3': 2, '4': 3, 'A': 0, 'B': 1, 'C': 2, 'D': 3}
+        c_idx = correct_map.get(str(q[6]).upper(), 0)
+
+        for c in chats:
+            try:
+                msg = await context.bot.send_poll(
+                    chat_id=c[0],
+                    question=question_text,
+                    options=options,
+                    type=Poll.QUIZ,
+                    correct_option_id=c_idx,
+                    explanation=explanation_text,
+                    explanation_parse_mode=ParseMode.HTML,
+                    is_anonymous=False
+                )
+                with db.get_db() as conn:
+                    conn.execute("INSERT INTO active_polls (poll_id, chat_id, correct_option_id) VALUES (?,?,?)", 
+                                 (msg.poll.id, c[0], c_idx))
+                await asyncio.sleep(0.1) 
+            except Exception as e:
+                logger.error(f"Failed to send to {c[0]}: {e}")
+
+        with db.get_db() as conn:
+            conn.execute("DELETE FROM questions WHERE id = ?", (q[0],))
+    except Exception as e:
+        logger.error(f"Critical Job Error: {e}")
+		
 
 async def nightly_leaderboard_job(context: ContextTypes.DEFAULT_TYPE):
     """Sends a daily summary with plain-text names and bold headers."""
@@ -1139,16 +1140,6 @@ flask_app = Flask('')
 def home():
     return "Bot is running!"
 
-def run_flask():
-    # Render provides PORT environment variable automatically
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
 # --- MAIN EXECUTION ---
 if __name__ == '__main__':
     # 1. Initialize Database
@@ -1159,7 +1150,6 @@ if __name__ == '__main__':
     keep_alive()
 
     # 3. Define Timezone for Kolkata
-    ist_timezone = pytz.timezone('Asia/Kolkata')
 
     # 4. Build Application using Environment Variables
     application = (
