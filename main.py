@@ -2,6 +2,8 @@ import logging
 import asyncio
 import pytz 
 import html
+import signal
+import sys
 from html import escape
 from telegram.constants import ParseMode
 from datetime import datetime, time
@@ -40,8 +42,13 @@ logger = logging.getLogger(__name__)
 # Note: Using standard Markdown for simplicity to avoid escape errors
 defaults = Defaults(parse_mode="Markdown")
 
+def shutdown(signum, frame):
+    print("🛑 Render shutdown signal received")
+    sys.exit(0)
 # --- NEW CONFIG & HELPERS ---
 REQUIRED_CHANNELS = ["@NEETIQBOTUPDATES", "@SANSKAR279"]
+
+
 
 async def check_force_join(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Returns True if user joined all required channels."""
@@ -1129,35 +1136,13 @@ async def mirror_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=SOURCE_GROUP_ID, text=summary)
 
 import os
-from threading import Thread
-from flask import Flask
-
-# --- KEEP-ALIVE SERVER FOR RENDER ---
-flask_app = Flask('')
-
-@flask_app.route('/')
-def home():
-    return "Bot is running!"
-
-def run_flask():
-    # Render provides PORT environment variable automatically
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
 
 # --- MAIN EXECUTION ---
 if __name__ == '__main__':
     # 1. Initialize Database
     db.init_db()
     
-    # 2. Start the Keep-Alive Web Server
-    print("🌐 Starting Keep-Alive server...")
-    keep_alive()
-
+    # 2. Start the Keep-Alive Web Serve
     # 3. Define Timezone for Kolkata
     ist_timezone = pytz.timezone('Asia/Kolkata')
 
@@ -1236,5 +1221,9 @@ if __name__ == '__main__':
     )
 
     print("🚀 NEETIQBot is fully secured and Online!")
-    application.run_polling(drop_pending_updates=True)
-	
+	application.run_polling(
+    drop_pending_updates=True,
+    close_loop=False,
+    allowed_updates=Update.ALL_TYPES
+	)
+    
